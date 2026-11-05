@@ -1,0 +1,8 @@
+{
+  "admin/services/mandarin-vpn": {
+    "title": "Mandarin VPN",
+    "order": 41,
+    "action": {"type":"view", "path":"mandarin-vpn/index"},
+    "depends": {"acl": ["luci-app-mandarin-vpn"]}
+  }
+}

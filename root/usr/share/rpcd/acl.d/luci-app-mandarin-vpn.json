@@ -1,0 +1,31 @@
+{
+  "luci-app-mandarin-vpn": {
+    "description": "Mandarin VPN Control Center",
+    "read": {
+      "ubus": {
+        "mandarinvpn": [
+          "status",
+          "peers",
+          "guest_profile",
+          "managed_profile",
+          "guest_diagnose"
+        ]
+      }
+    },
+    "write": {
+      "ubus": {
+        "mandarinvpn": [
+          "add_home",
+          "add_guest",
+          "disable_guest",
+          "enable_guest",
+          "delete_guest",
+          "migrate_prepare",
+          "migrate_finish",
+          "migrate_cancel",
+          "upgrade"
+        ]
+      }
+    }
+  }
+}
