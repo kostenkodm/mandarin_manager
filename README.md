@@ -1,26 +1,19 @@
-# Mandarin Manager
+# Mandarin Zapret2 Proxy for Home Assistant OS
 
-Локальная веб-панель управления подключениями на OpenWrt.
+Experimental Home Assistant OS add-on: a LAN SOCKS5 endpoint backed by the upstream ss-zapret2 anti-DPI container.
 
-## Возможности
+## Install from Home Assistant
 
-- Просмотр состояния сетевых подключений.
-- Управление клиентскими профилями.
-- Отображение QR из сохранённых профилей и локальный импорт `.conf`.
-- Диагностика доступности сети.
-- Обновление из интерфейса.
+Open Settings -> Apps -> Install app -> menu (three dots) -> Repositories.
+Add this repository URL (including the branch suffix):
 
-## Установка
+    https://github.com/kostenkodm/mandarin_manager#haos-addons
 
-```sh
-wget -O /tmp/mandarin-update.sh https://raw.githubusercontent.com/kostenkodm/mandarin_manager/main/update.sh
-sh /tmp/mandarin-update.sh
-```
+Find "Mandarin Zapret2 Proxy" in the app store, install it, and configure the allowed client's IP address before starting.
 
-После первой установки обновление выполняется через веб-интерфейс.
+This is an experimental integration: its operation depends on NFQUEUE/kernel features on the HAOS host. It has not been runtime-tested on all HAOS platforms. Do not expose SOCKS5 to the internet.
 
-## Конфиденциальность
+The default allowed client is loopback-only, so connecting from the LAN requires explicitly setting the router's LAN IP in the add-on configuration.
 
-Не размещайте в репозитории конфигурации реальных устройств, приватные ключи, клиентские профили, адреса инфраструктуры и журналы подключений.
-
-Лицензии сторонних компонентов приведены в отдельных файлах.
+Upstream: https://github.com/vernette/ss-zapret2
+See mandarin_zapret2_proxy/DOCS.md for details.

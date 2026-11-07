@@ -1,0 +1,31 @@
+name: "Mandarin Zapret2 Proxy"
+version: "0.1.1"
+slug: "mandarin_zapret2_proxy"
+description: "Experimental local SOCKS5 proxy with zapret2 for selective routing"
+url: "https://github.com/kostenkodm/mandarin_manager/tree/haos-addons"
+arch:
+  - amd64
+  - aarch64
+startup: services
+boot: manual
+init: false
+host_network: false
+privileged:
+  - NET_ADMIN
+  - NET_RAW
+map:
+  - type: app_config
+    read_only: false
+    path: /config
+ports:
+  "1080/tcp": 11080
+  "1080/udp": 11080
+ports_description:
+  "1080/tcp": "LAN SOCKS5 proxy (TCP); do not forward from WAN"
+  "1080/udp": "LAN SOCKS5 proxy (UDP); do not forward from WAN"
+options:
+  allowed_client_ip: "127.0.0.1"
+  verbose: false
+schema:
+  allowed_client_ip: str
+  verbose: bool
