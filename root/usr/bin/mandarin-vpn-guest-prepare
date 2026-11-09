@@ -14,8 +14,8 @@ Usage:
   mandarin-vpn-guest-prepare --endpoint HOST_OR_PUBLIC_IP [--port 61222] [--apply]
 
 By default prepares persistent UCI settings, without restarting network,
-firewall or Podkop. Requires inbound UDP forwarding on the ISP router.
-  --apply also activates the new interface, firewall and Podkop routing.
+firewall or the active routing engine. Requires inbound UDP forwarding.
+  --apply also activates the new interface, firewall and routing engine.
 Existing awg_home settings and outbound VPNs are never overwritten.
 TXT
 }
@@ -39,6 +39,15 @@ command -v jq >/dev/null || { echo 'ERROR: jq not installed' >&2; exit 1; }
 [ -z "$(uci -q get network.awg_guest || true)" ] || { echo 'ERROR: network.awg_guest already exists; no changes made' >&2; exit 1; }
 [ -z "$(uci -q get firewall.mvpn_guest_zone || true)" ] || { echo 'ERROR: guest firewall zone already exists; no changes made' >&2; exit 1; }
 [ -z "$(uci -q get mandarin_vpn.settings || true)" ] || { echo 'ERROR: guest console settings already exist; no changes made' >&2; exit 1; }
+# Do not touch obsolete Podkop when Tachyon is active.
+if [ -f /etc/config/tachyon ] && [ "$(uci -q get tachyon.settings 2>/dev/null || true)" = settings ]; then
+    ROUTER=tachyon
+elif [ -f /etc/config/podkop ] && [ "$(uci -q get podkop.settings 2>/dev/null || true)" = settings ]; then
+    ROUTER=podkop
+else
+    echo 'ERROR: neither Tachyon nor Podkop is configured; no changes made.' >&2
+    exit 1
+fi
 if ip -4 route show | grep -q "$PREFIX\."; then
     echo "ERROR: $PREFIX.0/24 appears in current routes. Choose a different guest subnet before running." >&2
     exit 1
@@ -56,7 +65,7 @@ umask 077
 NOW=$(date '+%Y%m%d-%H%M%S')
 BACKUP="/root/mandarin-vpn-backups/$NOW"
 mkdir -p "$BACKUP"
-for config in network firewall podkop; do
+for config in network firewall "$ROUTER"; do
     cp -p "/etc/config/$config" "$BACKUP/$config"
 done
 KEY=$(awg genkey)
@@ -133,10 +142,12 @@ for cidr in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16
     uci set "firewall.$sec.target=REJECT"
 done
 
-# The source interface list is respected by Podkop TPROXY rules.
-if ! uci -q show podkop.settings.source_network_interfaces | grep -Fq "='awg_guest'"; then
-    uci add_list podkop.settings.source_network_interfaces=awg_guest
-fi
+# Include Guest only in the currently active routing engine.
+srcs=$(uci -q get "$ROUTER.settings.source_network_interfaces" 2>/dev/null || true)
+case " $srcs " in
+    *' awg_guest '*) ;;
+    *) uci add_list "$ROUTER.settings.source_network_interfaces=awg_guest" ;;
+esac
 test -f /etc/config/mandarin_vpn || touch /etc/config/mandarin_vpn
 uci set mandarin_vpn.settings=settings
 uci set "mandarin_vpn.settings.endpoint=$ENDPOINT"
@@ -145,7 +156,7 @@ uci set mandarin_vpn.settings.subnet="$PREFIX.0/24"
 
 uci commit network
 uci commit firewall
-uci commit podkop
+uci commit "$ROUTER"
 uci commit mandarin_vpn
 chmod 600 /etc/config/network /etc/config/mandarin_vpn
 
@@ -160,16 +171,13 @@ if [ "$APPLY" -eq 1 ]; then
     /etc/init.d/network reload
     ifup awg_guest
     /etc/init.d/firewall reload
-    echo '=== Activating Podkop source interface (brief connectivity interruption) ==='
-    /etc/init.d/podkop restart
+    echo "=== Activating $ROUTER source interface (brief connectivity interruption) ==="
+    if [ "$ROUTER" = tachyon ]; then tachyon reload force; else /etc/init.d/podkop restart; fi
     echo '=== Checking interface ==='
     ip -br addr show awg_guest || true
-    echo '=== Validating generated sing-box configuration ==='
-    sing-box check -c /etc/sing-box/config.json || {
-        echo 'WARNING: sing-box check failed. Podkop may still be downloading rulesets.' >&2
-        echo 'Check again after list_update completion before any other changes.' >&2
-    }
+    echo "=== Checking $ROUTER status ==="
+    if [ "$ROUTER" = tachyon ]; then tachyon get_status; else sing-box check -c /etc/sing-box/config.json || true; fi
     echo 'Activation complete. Check firewall isolation from a guest device before sharing access.'
 else
-    echo 'To activate later: /etc/init.d/network reload && ifup awg_guest && /etc/init.d/firewall reload && /etc/init.d/podkop restart'
+    echo "To activate later: /etc/init.d/network reload && ifup awg_guest && /etc/init.d/firewall reload && $([ "$ROUTER" = tachyon ] && echo 'tachyon reload force' || echo '/etc/init.d/podkop restart')"
 fi
