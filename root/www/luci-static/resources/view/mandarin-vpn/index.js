@@ -1452,7 +1452,7 @@ return view.extend({
             ui.addNotification(null, E('p', {}, [successText || result.message || 'Готово']), 'info');
             return true;
         }
-        ui.addNotification(null, E('p', {}, [(result && result.error) || 'Операция не выполнена']), 'error');
+        ui.addNotification(null, E('p', {}, [(result && result.error) || (result && result.message) || 'RPC вернул пустой или некорректный ответ. Проверьте обновлятор командой mandarin-manager-update по SSH.']), 'error');
         return false;
     },
 
