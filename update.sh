@@ -22,6 +22,17 @@ run_update() {
     mkdir "$WORK/unpack"
     tar -xzf "$WORK/mandarin-manager.tar.gz" -C "$WORK/unpack"
     [ -f "$WORK/unpack/mandarin-manager/install.sh" ] || return 1
+    # Refuse downgrades when a stale distribution is still published.
+    old="$(cat /usr/share/mandarin-vpn/VERSION 2>/dev/null || printf '0.0.0')"
+    new="$(cat "$WORK/unpack/mandarin-manager/VERSION")"
+    if ! awk -v old="$old" -v new="$new" 'BEGIN {
+        split(old,a,"."); split(new,b,".");
+        for(i=1;i<=3;i++) {x=a[i]+0; y=b[i]+0; if(y>x)exit 0; if(y<x)exit 1;}
+        exit 0
+    }'; then
+        echo "Refusing downgrade from $old to $new; publish the new dist first" >&2
+        return 1
+    fi
     MANDARIN_SKIP_RPC_RESTART="$IS_RPC" sh "$WORK/unpack/mandarin-manager/install.sh"
     cat "$WORK/unpack/mandarin-manager/VERSION" > "$WORK/version"
 }
