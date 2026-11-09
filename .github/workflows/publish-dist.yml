@@ -1,0 +1,63 @@
+name: Publish Mandarin Manager distribution
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'dist/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mandarin-dist
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Validate scripts and UI
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in install.sh uninstall.sh update.sh root/usr/bin/mandarin-vpn root/usr/bin/mandarin-vpn-guest-prepare root/usr/bin/mandarin-vpn-guest-diagnose root/usr/bin/mandarin-manager-update root/usr/libexec/rpcd/mandarinvpn; do
+            sh -n "$f"
+          done
+          node --check root/www/luci-static/resources/view/mandarin-vpn/index.js
+          python3 - <<'PYJSON'
+          import json, pathlib
+          for p in pathlib.Path('root').rglob('*.json'):
+              json.loads(p.read_text())
+          PYJSON
+      - name: Build release archive and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          trap 'rm -rf "$T"' EXIT
+          mkdir -p "$T/mandarin-manager"
+          tar --exclude=.git --exclude=dist --exclude=.github --exclude=tests -cf - . | tar -xf - -C "$T/mandarin-manager"
+          mkdir -p dist
+          tar czf dist/mandarin-manager.tar.gz -C "$T" mandarin-manager
+          (cd dist && sha256sum mandarin-manager.tar.gz > mandarin-manager.sha256)
+          tar -tzf dist/mandarin-manager.tar.gz | grep -Fx 'mandarin-manager/install.sh'
+          tar -xOzf dist/mandarin-manager.tar.gz mandarin-manager/VERSION | grep -Fx "$(cat VERSION)"
+          sha256sum -c dist/mandarin-manager.sha256
+      - name: Publish dist to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add dist/mandarin-manager.tar.gz dist/mandarin-manager.sha256
+          if git diff --cached --quiet; then
+            echo "Distribution unchanged"
+          else
+            git commit -m "Build Mandarin Manager $(cat VERSION) distribution"
+            git push
+          fi
