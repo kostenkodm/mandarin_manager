@@ -1467,7 +1467,7 @@ return view.extend({
 
     handleUpgrade: function() {
         var self = this;
-        if (!window.confirm('Обновить Mandarin VPN Control Center из GitHub? Настройки AWG, Podkop и firewall не изменяются.')) return;
+        if (!window.confirm('Обновить Mandarin Manager из GitHub? Настройки AWG, Tachyon и firewall не изменяются.')) return;
         ui.addNotification(null, E('p', {}, ['Получаем обновление с GitHub и проверяем SHA-256...']), 'info');
         return callUpgrade().then(function(res) {
             if (self.notifyResult(res, 'Обновление установлено. Через несколько секунд обновите страницу (Ctrl+F5).')) {
@@ -1621,33 +1621,53 @@ return view.extend({
         var ifaces = status.interfaces || [];
         var byName = {};
         ifaces.forEach(function(i) { byName[i.name] = i; });
-        var main = (status.outbounds || []).filter(function(x) { return x.tag === 'main-out'; })[0] || {};
+        var tv = status.tachyon || {};
         var children = [
-            E('p', {}, ['Мониторинг маршрутизатора и локальное управление AWG. Входящие клиенты подключаются непосредственно к Mandarin, без VPS.']),
+            E('p', {}, ['Mandarin Manager ' + (status.version || '') + ' · мониторинг VPN и локальное управление AWG Home/Guest.']),
             E('div', { 'style': 'margin:8px 0' }, [button('Обновить данные', function() { return self.refresh(); }), button('Обновить приложение из GitHub', function() { return self.handleUpgrade(); }, 'cbi-button-positive')])
         ];
-        var c = [];
-        ['Prague','vps2_reality','Zurich','wgkir_AWG'].forEach(function(n, idx) {
-            var i = byName[n] || {};
-            var outbound = (status.outbounds || []).filter(function(x) {
-                return (n === 'Prague' && x.tag === 'prague_primary-out') ||
-                       (n === 'vps2_reality' && x.tag === 'vps2_reality-out') ||
-                       (n === 'Zurich' && x.tag === 'zurich_auto-out') ||
-                       (n === 'wgkir_AWG' && x.tag === 'wgkir_auto-out');
-            })[0];
-            c.push(E('div', { 'style': 'display:flex;gap:14px;align-items:center;border-bottom:1px solid #ccc;padding:10px 4px' }, [
-                E('strong', { 'style': 'min-width:35px' }, ['#' + (idx + 1)]),
-                E('div', { 'style': 'flex:1' }, [E('strong', {}, [NAMES[n]]), E('div', {}, [idx ? 'Резерв' : 'Основной'])]),
-                label(outbound ? 'Настроен' : 'Выход не найден', Boolean(outbound)),
-                label(n === 'vps2_reality' ? 'VLESS' : (i.present ? 'Интерфейс есть' : 'Нет интерфейса'), n === 'vps2_reality' ? Boolean(outbound) : i.present)
+        if (tv.configured) {
+            var nodes = tv.nodes || [];
+            var groupTable = E('table', { 'class': 'table', 'style': 'width:100%' }, [
+                E('tr', { 'class': 'tr table-titles' }, [
+                    E('th', { 'class': 'th' }, ['Узел']),
+                    E('th', { 'class': 'th' }, ['Подключение']),
+                    E('th', { 'class': 'th' }, ['Задержка']),
+                    E('th', { 'class': 'th' }, ['Выбор URLTest'])
+                ])
+            ]);
+            nodes.forEach(function(n) {
+                groupTable.appendChild(E('tr', { 'class': 'tr' }, [
+                    E('td', { 'class': 'td' }, [E('strong', {}, [n.name || n.tag]),
+                        E('div', { 'style':'font-size:.85em;opacity:.65' }, [n.tag])]),
+                    E('td', { 'class': 'td' }, [n.interface ? 'AWG / ' + n.interface : (n.type || '—')]),
+                    E('td', { 'class': 'td' }, [n.delay_ms > 0 ? n.delay_ms + ' мс' : 'Нет измерения']),
+                    E('td', { 'class': 'td' }, [label(n.selected ? 'Выбран' : 'Резерв / кандидат', n.selected)])
+                ]));
+            });
+            var z = tv.zapret2 || {};
+            var engineRows = [
+                E('p', {}, ['Ядро Tachyon: ', label(tv.running ? 'работает' : 'не работает', tv.running),
+                    ' · DNS: ', label(tv.dns_configured ? 'настроен' : 'не подтверждён', tv.dns_configured),
+                    ' · Узлов в URLTest: ' + nodes.length]),
+                E('p', {}, ['Активный выход: ' + (tv.selected || 'не определён')]),
+                groupTable,
+                E('p', {}, ['Zapret2: ', label(z.ready ? 'готов' : 'требует проверки', z.ready),
+                    ' · процессов nfqws2: ' + (z.running_process_count || 0) +
+                    ' · NFQUEUE ' + (z.queue_base || '—') + ': ' + (z.nft_queue_rules || 0) + ' правил']),
+                E('p', {}, ['Ошибка main: ' + ((tv.errors && tv.errors.main) || 'нет')])
+            ];
+            if (!nodes.length) engineRows.push(E('p', {}, ['URLTest не вернул узлы. Проверьте статус ядра Tachyon.']));
+            children.push(section('Tachyon · исходящие VPN', engineRows));
+        } else {
+            var main = (status.outbounds || []).filter(function(x) { return x.tag === 'main-out'; })[0] || {};
+            children.push(section('Исходящие VPN (старый Podkop)', [
+                E('p', {}, ['Tachyon не обнаружен; показан только режим совместимости.']),
+                E('p', {}, ['Группа main-out: ' + (main.type || 'не определена')]),
+                E('p', {}, ['Основной: ' + (main.outbounds || []).join(', ') + ' · резервы: ' + (main.fallbacks || []).join(' → ')]),
+                E('p', {}, ['sing-box: ' + (status.singbox_running ? 'запущен' : 'остановлен')])
             ]));
-        });
-        children.push(section('Исходящие VPN', c.concat([
-            E('p', {}, ['Группа main-out: ' + (main.type || 'не определена')]),
-            E('p', {}, ['Основной: ' + (main.outbounds || []).join(', ') + ' · резервы: ' + (main.fallbacks || []).join(' → ')]),
-            E('p', {}, ['sing-box: ' + (status.singbox_running ? 'запущен' : 'остановлен') +
-                 '; отсутствующих файлов правил: ' + (status.missing_rulesets || []).length])
-        ])));
+        }
         var homeInfo = byName.awg_home || {};
         var homeItems = [
             E('p', {}, ['Интерфейс: ' + (homeInfo.present ? 'найден' : 'не найден') +
@@ -1667,7 +1687,7 @@ return view.extend({
         var guestInfo = byName.awg_guest || {};
         var guestItems = [
             E('p', {}, ['Интерфейс: ' + (guestInfo.present ? 'есть' : 'ещё не создан') +
-                '. Podkop обрабатывает его трафик: ' + (status.guest_podkop_source ? 'да' : 'нет')]),
+                '. ' + (tv.configured ? 'Tachyon перехватывает его трафик: ' + (tv.guest_tachyon_source ? 'да' : 'нет') : 'Podkop перехватывает его трафик: ' + (status.guest_podkop_source ? 'да' : 'нет'))]),
             E('p', {}, ['Подключение гостей непосредственно к Mandarin. LAN и администрирование изолируются отдельной firewall-зоной.'])
         ];
         if (guestInfo.present && guestInfo.mode === 'server') {
