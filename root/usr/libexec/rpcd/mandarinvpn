@@ -27,7 +27,18 @@ JSON
         input=$(cat)
         case "$method" in
           status) "$BIN" status || true ;;
-          upgrade) MANDARIN_UPDATE_RPC=1 /usr/bin/mandarin-manager-update || true ;;
+          upgrade)
+              # Always return structured JSON, even when a child updater exits
+              # unexpectedly before producing a response.
+              result="$(MANDARIN_UPDATE_RPC=1 /usr/bin/mandarin-manager-update 2>/tmp/mandarin-manager-upgrade-error.log)" || code=$?
+              if [ -n "$result" ] && printf '%s' "$result" | jq -e 'type == "object" and has("ok")' >/dev/null 2>&1; then
+                  printf '%s\n' "$result"
+              else
+                  details="$(tail -n 4 /tmp/mandarin-manager-upgrade-error.log 2>/dev/null | tr '\n' ' ' | cut -c 1-240)"
+                  [ -n "$details" ] || details="Updater exited without valid JSON (code ${code:-0}). Run mandarin-manager-update over SSH to see diagnostics."
+                  jq -nc --arg error "$details" '{ok:false,error:$error}'
+              fi
+              ;;
           guest_diagnose) /usr/bin/mandarin-vpn-guest-diagnose 2>&1 | jq -Rs '{ok:true,details:.}' ;;
           peers)
               iface=$(printf '%s' "$input" | jq -r '.interface // ""')
