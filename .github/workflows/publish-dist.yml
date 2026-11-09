@@ -47,7 +47,7 @@ jobs:
           (cd dist && sha256sum mandarin-manager.tar.gz > mandarin-manager.sha256)
           tar -tzf dist/mandarin-manager.tar.gz | grep -Fx 'mandarin-manager/install.sh'
           tar -xOzf dist/mandarin-manager.tar.gz mandarin-manager/VERSION | grep -Fx "$(cat VERSION)"
-          sha256sum -c dist/mandarin-manager.sha256
+          (cd dist && sha256sum -c mandarin-manager.sha256)
       - name: Publish dist to main
         shell: bash
         run: |
