@@ -30,14 +30,16 @@ JSON
           upgrade)
               # Always return structured JSON, even when a child updater exits
               # unexpectedly before producing a response.
-              result="$(MANDARIN_UPDATE_RPC=1 /usr/bin/mandarin-manager-update 2>/tmp/mandarin-manager-upgrade-error.log)" || code=$?
+              errfile="$(mktemp /tmp/mandarin-upgrade-error.XXXXXX)" || errfile=/dev/null
+              result="$(MANDARIN_UPDATE_RPC=1 /usr/bin/mandarin-manager-update 2>"$errfile")" || code=$?
               if [ -n "$result" ] && printf '%s' "$result" | jq -e 'type == "object" and has("ok")' >/dev/null 2>&1; then
                   printf '%s\n' "$result"
               else
-                  details="$(tail -n 4 /tmp/mandarin-manager-upgrade-error.log 2>/dev/null | tr '\n' ' ' | cut -c 1-240)"
+                  details="$(tail -n 4 "$errfile" 2>/dev/null | tr '\n' ' ' | cut -c 1-240)"
                   [ -n "$details" ] || details="Updater exited without valid JSON (code ${code:-0}). Run mandarin-manager-update over SSH to see diagnostics."
                   jq -nc --arg error "$details" '{ok:false,error:$error}'
               fi
+              [ "$errfile" = /dev/null ] || rm -f "$errfile"
               ;;
           guest_diagnose) /usr/bin/mandarin-vpn-guest-diagnose 2>&1 | jq -Rs '{ok:true,details:.}' ;;
           peers)
