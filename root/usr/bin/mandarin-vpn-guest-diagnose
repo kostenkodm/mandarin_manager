@@ -21,13 +21,24 @@ printf '\n=== DNS interface restriction (if configured) ===\n'
 uci -q show dhcp | grep -E '(^dhcp\.[^.]+\.(interface|notinterface|nonwildcard|localservice|port)=)' | head -n 30 || true
 printf '\n=== Routing from typical Guest client ===\n'
 ip -4 route get 1.1.1.1 from 10.77.70.2 iif awg_guest 2>&1 || true
-printf '\n=== Podkop source interfaces ===\n'
-uci -q get podkop.settings.source_network_interfaces || true
-printf '\n=== Sing-box TPROXY input (ports only) ===\n'
-if [ -r /etc/sing-box/config.json ]; then
-    jq -r '.inbounds[]? | select(.type == "tproxy" or .type == "redirect" or .type == "tun") | [.tag,.type,(.listen_port // "-")] | @tsv' /etc/sing-box/config.json 2>/dev/null || true
+if [ -f /etc/config/tachyon ] && command -v tachyon >/dev/null 2>&1; then
+    printf '\n=== Tachyon source interfaces ===\n'
+    uci -q get tachyon.settings.source_network_interfaces || true
+    printf '\n=== Tachyon runtime status ===\n'
+    tachyon get_status || true
+    printf '\n=== Tachyon TPROXY input (ports only) ===\n'
+    if [ -r /etc/tachyon-core/config.json ]; then
+        jq -r '.inbounds[]? | select(.type == "tproxy" or .type == "redirect" or .type == "tun") | [.tag,.type,(.listen_port // "-")] | @tsv' /etc/tachyon-core/config.json 2>/dev/null || true
+    fi
+else
+    printf '\n=== Legacy Podkop source interfaces ===\n'
+    uci -q get podkop.settings.source_network_interfaces || true
+    printf '\n=== Legacy sing-box TPROXY input (ports only) ===\n'
+    if [ -r /etc/sing-box/config.json ]; then
+        jq -r '.inbounds[]? | select(.type == "tproxy" or .type == "redirect" or .type == "tun") | [.tag,.type,(.listen_port // "-")] | @tsv' /etc/sing-box/config.json 2>/dev/null || true
+    fi
 fi
 printf '\n=== Firewall active state (selected rules, no secrets) ===\n'
-nft list ruleset 2>/dev/null | grep -Ei 'mvpn_guest|awg_guest|podkop' | head -n 40 || true
+nft list ruleset 2>/dev/null | grep -Ei 'mvpn_guest|awg_guest|TachyonTable|podkop' | head -n 40 || true
 printf '\n=== Processes ===\n'
-pgrep -af sing-box || true
+pgrep -af 'tachyon-core|sing-box' || true
