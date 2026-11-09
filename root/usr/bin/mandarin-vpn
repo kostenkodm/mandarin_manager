@@ -31,6 +31,101 @@ find_peer_section() {
     printf '%s\n' "$section"
 }
 
+# Read only safe operational metadata from Tachyon. Never expose keys,
+# proxy URLs or endpoint secrets to the LuCI RPC status interface.
+tachyon_status() {
+    tmp=$1
+    if [ ! -f /etc/config/tachyon ] || ! command -v tachyon >/dev/null 2>&1; then
+        printf '%s\n' '{"configured":false,"running":false,"nodes":[],"sources":[]}'
+        return 0
+    fi
+
+    (tachyon get_status 2>/dev/null || printf '{}\n') > "$tmp/tachyon-core"
+    (tachyon clash_api get_proxies 2>/dev/null || printf '{}\n') > "$tmp/tachyon-proxies"
+    (tachyon get_zapret2_status 2>/dev/null || printf '{}\n') > "$tmp/tachyon-zapret"
+    for f in tachyon-core tachyon-proxies tachyon-zapret; do
+        jq -e 'type=="object"' "$tmp/$f" >/dev/null 2>&1 || printf '{}\n' > "$tmp/$f"
+    done
+
+    if [ -r /etc/tachyon-core/config.json ] && jq -e 'type=="object"' /etc/tachyon-core/config.json >/dev/null 2>&1; then
+        jq '[.outbounds[]? | {tag, type, bind_interface:(.bind_interface // "")}]' \
+            /etc/tachyon-core/config.json > "$tmp/tachyon-outbound-meta"
+    else
+        printf '[]\n' > "$tmp/tachyon-outbound-meta"
+    fi
+
+    : > "$tmp/tachyon-sources-lines"
+    for ref in $(uci_get tachyon.main.outbound_source_refs); do
+        case "$ref" in *[!a-zA-Z0-9_]*|'') continue ;; esac
+        kind=$(uci_get "tachyon.$ref.source_type")
+        iface=$(uci_get "tachyon.$ref.interface_name")
+        name=$(uci_get "tachyon.$ref.name")
+        [ -n "$name" ] || name=$ref
+        jq -nc --arg id "$ref" --arg name "$name" --arg type "$kind" --arg interface "$iface" \
+          '{id:$id,name:$name,type:$type,interface:$interface}' >> "$tmp/tachyon-sources-lines"
+    done
+    jq -s '.' "$tmp/tachyon-sources-lines" > "$tmp/tachyon-sources"
+
+    if [ -r /var/run/tachyon/section-errors.json ] &&
+       jq -e 'type=="object"' /var/run/tachyon/section-errors.json >/dev/null 2>&1; then
+        jq '{main:(.main // ""),sections:(keys|length)}' \
+            /var/run/tachyon/section-errors.json > "$tmp/tachyon-errors"
+    else
+        printf '{"main":"","sections":0}\n' > "$tmp/tachyon-errors"
+    fi
+
+    if command -v nft >/dev/null 2>&1; then
+        nft list table inet TachyonTable 2>/dev/null |
+            grep -c 'queue flags bypass to 4300' > "$tmp/nfq-count" || true
+    else
+        printf '0\n' > "$tmp/nfq-count"
+    fi
+    [ -s "$tmp/nfq-count" ] || printf '0\n' > "$tmp/nfq-count"
+
+    srcs=$(uci_get tachyon.settings.source_network_interfaces)
+    case " $srcs " in *' awg_guest '*) guest_source=true ;; *) guest_source=false ;; esac
+
+    jq -n \
+      --slurpfile core "$tmp/tachyon-core" \
+      --slurpfile proxies "$tmp/tachyon-proxies" \
+      --slurpfile zapret "$tmp/tachyon-zapret" \
+      --slurpfile outbound "$tmp/tachyon-outbound-meta" \
+      --slurpfile sources "$tmp/tachyon-sources" \
+      --slurpfile errors "$tmp/tachyon-errors" \
+      --argjson queues "$(cat "$tmp/nfq-count")" \
+      --argjson guest_source "$guest_source" '
+       ($proxies[0].proxies // {}) as $p |
+       ($p["main-urltest-avtovybor-out"] // {}) as $group |
+       ($outbound[0] // []) as $all |
+       ($sources[0] // []) as $srcs |
+       {
+         configured:true,
+         running:(($core[0].running // 0) == 1),
+         dns_configured:(($core[0].dns_configured // 0) == 1),
+         group:"main-urltest-avtovybor-out",
+         selected:($group.now // ""),
+         nodes:[ ($group.all // [])[] | . as $tag |
+             ($p[$tag] // {}) as $node |
+             (first($all[] | select(.tag == $tag)) // {}) as $meta |
+             ($meta.bind_interface // "") as $iface |
+             (first($srcs[] | select(.type == "interface" and .interface == $iface) | .name) // "") as $iface_name |
+             {tag:$tag,type:($node.type // $meta.type // "unknown"),
+              interface:$iface, name:(if $iface_name != "" then $iface_name else $tag end),
+              delay_ms:(($node.history // [] | last | .delay) // 0),
+              selected:($tag == ($group.now // ""))}
+         ],
+         sources:$srcs,
+         errors:$errors[0],
+         zapret2:{ready:($zapret[0].ready // false),
+                  conflict:($zapret[0].conflict // false),
+                  enabled_rule_count:($zapret[0].enabled_rule_count // 0),
+                  running_process_count:($zapret[0].running_process_count // 0),
+                  queue_base:($zapret[0].queue_base // 0),
+                  nft_queue_rules:$queues},
+         guest_tachyon_source:$guest_source
+       }'
+}
+
 status() {
     tmp=$(mktemp -d) || fail 'Cannot create temporary directory'
     trap 'rm -rf "$tmp"' EXIT INT TERM
@@ -53,20 +148,13 @@ status() {
         if [ "$name" = awg_home ] || [ "$name" = awg_guest ]; then
             server_port=$(uci_get "network.$name.listen_port")
             if [ -n "$server_port" ]; then
-                # An AWG interface with remote endpoint peers can be a client,
-                # even if it has a local listen_port for NAT traversal.
-                if uci -q show network | grep -E '^network\.[A-Za-z0-9_]+\.endpoint_host=' >/dev/null 2>&1; then
-                    peer_kind="amneziawg_$name"
-                    mode=server
-                    for peer_section in $(uci -q show network | sed -n "s/^network\.\([A-Za-z0-9_]*\)=$peer_kind$/\1/p"); do
-                        if [ -n "$(uci_get "network.$peer_section.endpoint_host")" ]; then
-                            mode=client_tunnel
-                            break
-                        fi
-                    done
-                else
-                    mode=server
-                fi
+                mode=server
+                for peer_section in $(uci -q show network | sed -n "s/^network\.\([A-Za-z0-9_]*\)=amneziawg_$name$/\1/p"); do
+                    if [ -n "$(uci_get "network.$peer_section.endpoint_host")" ]; then
+                        mode=client_tunnel
+                        break
+                    fi
+                done
             else
                 mode=client_or_unconfigured
             fi
@@ -77,19 +165,36 @@ status() {
         jq -nc --arg name "$name" --arg proto "$protocol" --arg mode "$mode" --arg port "$server_port" --argjson present "$exists" --argjson up "$up" --argjson handshake "$last" --argjson peers "$count" \
            '{name:$name,protocol:$proto,present:$present,up:$up,mode:$mode,listen_port:$port,latest_handshake:$handshake,peer_count:$peers}' >> "$tmp/ifaces"
     done
-    if [ -s /etc/sing-box/config.json ] && jq -e . /etc/sing-box/config.json >/dev/null 2>&1; then
-        jq -c '[.outbounds[] | select(.tag == "main-out" or .tag == "prague_primary-out" or .tag == "vps2_reality-out" or .tag == "zurich_auto-out" or .tag == "wgkir_auto-out") | {tag,type,outbounds:(.outbounds // []),fallbacks:(.fallbacks // []),bind_interface:(.bind_interface // null)}]' /etc/sing-box/config.json > "$tmp/routes"
-        jq -c '[.route.rule_set[]? | select(.type == "local") | .path // empty]' /etc/sing-box/config.json | jq -r '.[]' | while IFS= read -r path; do
-            [ -f "$path" ] || printf '%s\n' "$path"
-        done | jq -Rsc 'split("\n") | map(select(length>0))' > "$tmp/missing"
+
+    tachyon_status "$tmp" > "$tmp/tachyon-report"
+    if jq -e '.configured' "$tmp/tachyon-report" >/dev/null 2>&1; then
+        printf '[]\n' > "$tmp/routes"
+        printf '[]\n' > "$tmp/missing"
+        running=$(jq -r '.running' "$tmp/tachyon-report")
+        source=$(jq -r '.guest_tachyon_source' "$tmp/tachyon-report")
+        engine=tachyon
     else
-        echo '[]' > "$tmp/routes"
-        echo '["sing-box config missing or invalid"]' > "$tmp/missing"
+        engine=legacy
+        if [ -s /etc/sing-box/config.json ] && jq -e . /etc/sing-box/config.json >/dev/null 2>&1; then
+            jq -c '[.outbounds[] | select(.tag == "main-out" or .tag == "prague_primary-out" or .tag == "vps2_reality-out" or .tag == "zurich_auto-out" or .tag == "wgkir_auto-out") | {tag,type,outbounds:(.outbounds // []),fallbacks:(.fallbacks // []),bind_interface:(.bind_interface // null)}]' /etc/sing-box/config.json > "$tmp/routes"
+            jq -c '[.route.rule_set[]? | select(.type == "local") | .path // empty]' /etc/sing-box/config.json | jq -r '.[]' | while IFS= read -r path; do
+                [ -f "$path" ] || printf '%s\n' "$path"
+            done | jq -Rsc 'split("\n") | map(select(length>0))' > "$tmp/missing"
+        else
+            printf '[]\n' > "$tmp/routes"
+            printf '["Legacy sing-box config missing"]\n' > "$tmp/missing"
+        fi
+        if pidof sing-box >/dev/null 2>&1; then running=true; else running=false; fi
+        srcs=$(uci_get podkop.settings.source_network_interfaces)
+        case " $srcs " in *' awg_guest '*) source=true ;; *) source=false ;; esac
     fi
-    if pidof sing-box >/dev/null 2>&1; then running=true; else running=false; fi
-    if [ -n "$(uci_get podkop.settings.source_network_interfaces | tr ' ' '\n' | grep -x awg_guest || true)" ]; then source=true; else source=false; fi
-    jq -n --slurpfile interfaces "$tmp/ifaces" --slurpfile routes "$tmp/routes" --slurpfile missing "$tmp/missing" --argjson running "$running" --argjson guest_source "$source" \
-      '{ok:true,interfaces:$interfaces, outbounds:$routes[0],missing_rulesets:$missing[0],singbox_running:$running,guest_podkop_source:$guest_source}'
+
+    ver=$(cat /usr/share/mandarin-vpn/VERSION 2>/dev/null || printf '0.6.0')
+    jq -n --slurpfile interfaces "$tmp/ifaces" --slurpfile routes "$tmp/routes" --slurpfile missing "$tmp/missing" \
+      --slurpfile tachyon "$tmp/tachyon-report" --arg version "$ver" --arg engine "$engine" \
+      --argjson running "$running" --argjson guest_source "$source" \
+      '{ok:true,version:$version,engine:$engine,interfaces:$interfaces, tachyon:$tachyon[0],
+        outbounds:$routes[0],missing_rulesets:$missing[0],singbox_running:$running,guest_podkop_source:($engine=="legacy" and $guest_source)}'
 }
 
 peers() {
