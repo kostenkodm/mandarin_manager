@@ -20,8 +20,15 @@ copy_file() {
         mkdir -p "$BACKUP/${relative%/*}"
         cp -p "$dest" "$BACKUP/$relative" || exit 1
     fi
-    cp "$src/$relative" "$dest" || exit 1
-    chmod "$mode" "$dest" || exit 1
+    # Atomic replacement: the updater and rpcd plugin may be executing while
+    # their own files are being upgraded. In-place cp truncates a live script
+    # and can terminate it before a JSON response reaches LuCI.
+    staged="$(mktemp "${dest}.new.XXXXXX")" || exit 1
+    if ! cp "$src/$relative" "$staged" || ! chmod "$mode" "$staged" || ! mv -f "$staged" "$dest"; then
+        rm -f "$staged"
+        echo "Failed to install $relative" >&2
+        exit 1
+    fi
 }
 copy_file 0755 usr/bin/mandarin-vpn
 copy_file 0755 usr/bin/mandarin-manager-update
